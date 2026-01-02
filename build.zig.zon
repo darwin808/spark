@@ -1,0 +1,11 @@
+.{
+    .name = .spark,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.13.0",
+    .fingerprint = 0x9d13cf2d2d6a9bb1,
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
