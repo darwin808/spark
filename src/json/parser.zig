@@ -1,10 +1,14 @@
 const std = @import("std");
 
-/// Zero-allocation JSON parser using comptime reflection.
+/// Zero-allocation JSON parser using comptime reflection with depth limiting.
 pub const Parser = struct {
     input: []const u8,
     pos: usize = 0,
+    depth: usize = 0,
     allocator: std.mem.Allocator,
+
+    // Security limits
+    max_depth: usize = 64,
 
     pub const Error = error{
         UnexpectedToken,
@@ -20,10 +24,15 @@ pub const Parser = struct {
         InvalidEscape,
         NumberOverflow,
         OutOfMemory,
+        MaxDepthExceeded,
     };
 
     pub fn init(input: []const u8, allocator: std.mem.Allocator) Parser {
         return .{ .input = input, .allocator = allocator };
+    }
+
+    pub fn initWithMaxDepth(input: []const u8, allocator: std.mem.Allocator, max_depth: usize) Parser {
+        return .{ .input = input, .allocator = allocator, .max_depth = max_depth };
     }
 
     /// Parse JSON into type T using comptime reflection.
@@ -33,6 +42,10 @@ pub const Parser = struct {
     }
 
     fn parseValue(self: *Parser, comptime T: type) Error!T {
+        // Check depth limit
+        if (self.depth > self.max_depth) {
+            return error.MaxDepthExceeded;
+        }
         const info = @typeInfo(T);
 
         return switch (info) {
@@ -192,6 +205,8 @@ pub const Parser = struct {
             return error.ExpectedArray;
         }
         self.pos += 1;
+        self.depth += 1; // Track nesting depth
+        defer self.depth -= 1;
 
         var list = std.ArrayListUnmanaged(Child){};
 
@@ -226,6 +241,8 @@ pub const Parser = struct {
             return error.ExpectedObject;
         }
         self.pos += 1;
+        self.depth += 1; // Track nesting depth
+        defer self.depth -= 1;
 
         var result: T = undefined;
         const fields = std.meta.fields(T);

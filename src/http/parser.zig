@@ -2,7 +2,7 @@ const std = @import("std");
 const Method = @import("method.zig").Method;
 const Headers = @import("headers.zig").Headers;
 
-/// Zero-copy HTTP/1.1 request parser.
+/// Zero-copy HTTP/1.1 request parser with security limits.
 /// All returned slices point directly into the input buffer.
 pub const Parser = struct {
     state: State = .method,
@@ -19,6 +19,17 @@ pub const Parser = struct {
     header_name_end: usize = 0,
     body_start: usize = 0,
     content_length: ?usize = null,
+    header_count: usize = 0,
+
+    // Security limits
+    limits: Limits = .{},
+
+    pub const Limits = struct {
+        max_uri_length: usize = 8 * 1024, // 8KB
+        max_header_size: usize = 8 * 1024, // 8KB per header
+        max_headers: usize = 100,
+        max_body_size: usize = 1024 * 1024, // 1MB
+    };
 
     pub const Version = enum {
         http_1_0,
@@ -47,6 +58,10 @@ pub const Parser = struct {
         InvalidVersion,
         InvalidHeader,
         HeaderTooLarge,
+        TooManyHeaders,
+        UriTooLong,
+        BodyTooLarge,
+        Overflow,
         Incomplete,
     };
 
@@ -58,6 +73,11 @@ pub const Parser = struct {
         headers: *const Headers,
         body: ?[]const u8,
     };
+
+    /// Initialize parser with custom limits.
+    pub fn initWithLimits(limits: Limits) Parser {
+        return .{ .limits = limits };
+    }
 
     /// Parse HTTP request from buffer.
     /// Returns Error.Incomplete if more data needed.
@@ -79,6 +99,10 @@ pub const Parser = struct {
                 },
 
                 .path => {
+                    // Check URI length limit
+                    if (self.pos - self.mark > self.limits.max_uri_length) {
+                        return error.UriTooLong;
+                    }
                     if (c == ' ') {
                         self.path = buffer[self.mark..self.pos];
                         self.pos += 1;
@@ -95,6 +119,10 @@ pub const Parser = struct {
                 },
 
                 .query => {
+                    // Check URI length limit (path + query)
+                    if (self.pos - self.mark > self.limits.max_uri_length) {
+                        return error.UriTooLong;
+                    }
                     if (c == ' ') {
                         self.query = buffer[self.mark..self.pos];
                         self.pos += 1;
@@ -168,15 +196,31 @@ pub const Parser = struct {
                 },
 
                 .header_value => {
+                    // Check header size limit
+                    const header_size = (self.header_name_end - self.header_name_start) + (self.pos - self.mark);
+                    if (header_size > self.limits.max_header_size) {
+                        return error.HeaderTooLarge;
+                    }
+
                     if (c == '\r') {
                         const name = buffer[self.header_name_start..self.header_name_end];
                         const value = buffer[self.mark..self.pos];
 
+                        // Check header count limit
+                        self.header_count += 1;
+                        if (self.header_count > self.limits.max_headers) {
+                            return error.TooManyHeaders;
+                        }
+
                         self.headers.add(name, value);
 
-                        // Check for Content-Length
+                        // Check for Content-Length and validate against max_body_size
                         if (std.ascii.eqlIgnoreCase(name, "content-length")) {
-                            self.content_length = std.fmt.parseInt(usize, value, 10) catch 0;
+                            const len = std.fmt.parseInt(usize, value, 10) catch 0;
+                            if (len > self.limits.max_body_size) {
+                                return error.BodyTooLarge;
+                            }
+                            self.content_length = len;
                         }
 
                         self.pos += 1;
@@ -217,8 +261,12 @@ pub const Parser = struct {
 
                 .body => {
                     if (self.content_length) |len| {
-                        if (buffer.len >= self.body_start + len) {
-                            self.pos = self.body_start + len;
+                        // Use checked arithmetic to prevent overflow
+                        const body_end = std.math.add(usize, self.body_start, len) catch {
+                            return error.Overflow;
+                        };
+                        if (buffer.len >= body_end) {
+                            self.pos = body_end;
                             self.state = .done;
                         } else {
                             return error.Incomplete;

@@ -17,6 +17,9 @@ pub const Request = struct {
     // Cached query params (parsed lazily)
     _query_params: ?QueryParams = null,
 
+    // Security limits
+    max_query_params: usize = 100,
+
     pub const ParamMap = std.StringHashMapUnmanaged([]const u8);
     pub const QueryParams = std.StringHashMapUnmanaged([]const u8);
 
@@ -36,6 +39,27 @@ pub const Request = struct {
             .body = body,
             .params = .{},
             .allocator = allocator,
+        };
+    }
+
+    pub fn initWithLimits(
+        method: Method,
+        path: []const u8,
+        query_string: ?[]const u8,
+        headers: *const Headers,
+        body: ?[]const u8,
+        allocator: std.mem.Allocator,
+        max_query_params: usize,
+    ) Request {
+        return .{
+            .method = method,
+            .path = path,
+            .query_string = query_string,
+            .headers = headers,
+            .body = body,
+            .params = .{},
+            .allocator = allocator,
+            .max_query_params = max_query_params,
         };
     }
 
@@ -60,12 +84,19 @@ pub const Request = struct {
 
         var params = QueryParams{};
         var iter = std.mem.splitScalar(u8, qs, '&');
+        var count: usize = 0;
 
         while (iter.next()) |pair| {
+            // Enforce query parameter limit
+            if (count >= self.max_query_params) {
+                break;
+            }
+
             if (std.mem.indexOfScalar(u8, pair, '=')) |eq_pos| {
                 const key = pair[0..eq_pos];
                 const value = pair[eq_pos + 1 ..];
                 params.put(self.allocator, key, value) catch continue;
+                count += 1;
             }
         }
 

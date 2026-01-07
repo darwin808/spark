@@ -149,7 +149,7 @@ pub const Router = struct {
         var segments = std.ArrayListUnmanaged(Segment){};
 
         const normalized = if (pattern.len > 0 and pattern[0] == '/') pattern[1..] else pattern;
-        if (normalized.len == 0) return segments.items;
+        if (normalized.len == 0) return &[_]Segment{};
 
         var iter = std.mem.splitScalar(u8, normalized, '/');
 
@@ -165,10 +165,16 @@ pub const Router = struct {
             }
         }
 
-        return segments.items;
+        return segments.toOwnedSlice(self.allocator);
     }
 
     pub fn deinit(self: *Router) void {
+        // Free segments allocated for each route (len==0 means static empty slice)
+        for (self.routes.items) |r| {
+            if (r.segments.len > 0) {
+                self.allocator.free(r.segments);
+            }
+        }
         self.routes.deinit(self.allocator);
         self.middleware.deinit(self.allocator);
     }
@@ -231,6 +237,11 @@ test "router basic matching" {
     var router = Router.init(allocator);
     defer router.deinit();
 
+    // Use arena for match results (freed at end of test)
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
     const dummy = struct {
         fn handler(_: *Context) anyerror!void {}
     }.handler;
@@ -241,13 +252,13 @@ test "router basic matching" {
 
     // Test exact match
     {
-        const result = router.match(.GET, "/users", allocator).?;
+        const result = router.match(.GET, "/users", arena_alloc).?;
         try std.testing.expectEqual(@as(usize, 0), result.params.len);
     }
 
     // Test param extraction
     {
-        const result = router.match(.GET, "/users/123", allocator).?;
+        const result = router.match(.GET, "/users/123", arena_alloc).?;
         try std.testing.expectEqual(@as(usize, 1), result.params.len);
         try std.testing.expectEqualStrings("id", result.params[0].name);
         try std.testing.expectEqualStrings("123", result.params[0].value);
@@ -255,7 +266,7 @@ test "router basic matching" {
 
     // Test method mismatch
     {
-        const result = router.match(.DELETE, "/users", allocator);
+        const result = router.match(.DELETE, "/users", arena_alloc);
         try std.testing.expectEqual(@as(?Router.MatchResult, null), result);
     }
 }
@@ -265,13 +276,18 @@ test "router with multiple params" {
     var router = Router.init(allocator);
     defer router.deinit();
 
+    // Use arena for match results (freed at end of test)
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
     const dummy = struct {
         fn handler(_: *Context) anyerror!void {}
     }.handler;
 
     router.get("/users/:userId/posts/:postId", dummy);
 
-    const result = router.match(.GET, "/users/42/posts/99", allocator).?;
+    const result = router.match(.GET, "/users/42/posts/99", arena_alloc).?;
     try std.testing.expectEqual(@as(usize, 2), result.params.len);
     try std.testing.expectEqualStrings("userId", result.params[0].name);
     try std.testing.expectEqualStrings("42", result.params[0].value);

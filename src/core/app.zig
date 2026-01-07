@@ -24,9 +24,14 @@ pub const Spark = struct {
         host: []const u8 = "127.0.0.1",
         max_connections: usize = 10000,
         buffer_size: usize = 16 * 1024,
-        read_timeout_ms: u32 = 30000,
+        read_timeout_ms: u32 = 10000, // 10s - reduced for slowloris protection
         write_timeout_ms: u32 = 30000,
-        max_body_size: usize = 1024 * 1024,
+        // Security limits
+        max_body_size: usize = 1024 * 1024, // 1MB
+        max_header_size: usize = 8 * 1024, // 8KB per header
+        max_headers: usize = 100,
+        max_query_params: usize = 100,
+        max_uri_length: usize = 8 * 1024, // 8KB
     };
 
     /// Initialize a new Spark application.
@@ -133,13 +138,36 @@ pub const Spark = struct {
         // Get Spark instance from connection context
         const self: *Spark = @ptrCast(@alignCast(conn.context orelse return));
 
-        // Parse HTTP request
-        var parser = HttpParser{};
+        // Parse HTTP request with security limits from config
+        var parser = HttpParser.initWithLimits(.{
+            .max_uri_length = self.config.max_uri_length,
+            .max_header_size = self.config.max_header_size,
+            .max_headers = self.config.max_headers,
+            .max_body_size = self.config.max_body_size,
+        });
         const parse_result = parser.parse(conn.readData()) catch |err| {
             switch (err) {
                 error.Incomplete => return, // Need more data, wait for next read
+                error.UriTooLong => {
+                    const response_414 = "HTTP/1.1 414 URI Too Long\r\nContent-Length: 12\r\n\r\nURI Too Long";
+                    @memcpy(conn.write_buffer[0..response_414.len], response_414);
+                    conn.write_len = response_414.len;
+                    return;
+                },
+                error.HeaderTooLarge, error.TooManyHeaders => {
+                    const response_431 = "HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 31\r\n\r\nRequest Header Fields Too Large";
+                    @memcpy(conn.write_buffer[0..response_431.len], response_431);
+                    conn.write_len = response_431.len;
+                    return;
+                },
+                error.BodyTooLarge => {
+                    const response_413 = "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 16\r\n\r\nPayload Too Large";
+                    @memcpy(conn.write_buffer[0..response_413.len], response_413);
+                    conn.write_len = response_413.len;
+                    return;
+                },
                 else => {
-                    // Send 400 Bad Request
+                    // Send 400 Bad Request for other parse errors
                     const bad_request = "HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\n\r\nBad Request";
                     @memcpy(conn.write_buffer[0..bad_request.len], bad_request);
                     conn.write_len = bad_request.len;
@@ -148,14 +176,15 @@ pub const Spark = struct {
             }
         };
 
-        // Create request object
-        var request = Request.init(
+        // Create request object with security limits
+        var request = Request.initWithLimits(
             parse_result.method,
             parse_result.path,
             parse_result.query,
             parse_result.headers,
             parse_result.body,
             self.allocator,
+            self.config.max_query_params,
         );
 
         // Create response object
