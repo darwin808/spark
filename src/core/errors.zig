@@ -63,14 +63,16 @@ pub const ValidationErrors = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator) ValidationErrors {
+        var errors = std.ArrayList(FieldError){};
+        _ = errors.ensureUnusedCapacity(allocator, 0) catch {};
         return .{
-            .errors = std.ArrayList(FieldError).init(allocator),
+            .errors = errors,
             .allocator = allocator,
         };
     }
 
     pub fn add(self: *ValidationErrors, field: []const u8, code: []const u8, message: []const u8) void {
-        self.errors.append(.{
+        self.errors.append(self.allocator, .{
             .field = field,
             .code = code,
             .message = message,

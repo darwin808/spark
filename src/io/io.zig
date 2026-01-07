@@ -16,6 +16,7 @@ pub const Io = struct {
     buffer_pool: BufferPool,
     config: Config,
     running: bool = false,
+    handler_context: ?*anyopaque = null,
 
     const Backend = union(enum) {
         kqueue: Kqueue,
@@ -39,6 +40,7 @@ pub const Io = struct {
         write_pos: usize = 0,
         write_len: usize = 0,
         index: usize,
+        context: ?*anyopaque = null, // User-defined context (e.g., Spark app)
 
         pub const State = enum {
             idle,
@@ -105,7 +107,7 @@ pub const Io = struct {
             posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEPORT, &std.mem.toBytes(@as(c_int, 1))) catch {};
         }
 
-        try posix.bind(fd, &addr.any, addr.getLen());
+        try posix.bind(fd, &addr.any, @sizeOf(posix.sockaddr.in));
         try posix.listen(fd, 128);
 
         return fd;
@@ -116,12 +118,15 @@ pub const Io = struct {
         self: *Io,
         listen_fd: posix.fd_t,
         handler: *const fn (*Connection) void,
+        context: ?*anyopaque,
     ) !void {
         self.running = true;
+        self.handler_context = context;
 
-        switch (self.backend) {
-            .kqueue => |*kq| try self.runKqueue(kq, listen_fd, handler),
-            .io_uring => |*ring| try self.runIoUring(ring, listen_fd, handler),
+        switch (builtin.os.tag) {
+            .linux => try self.runIoUring(&self.backend.io_uring, listen_fd, handler),
+            .macos, .freebsd => try self.runKqueue(&self.backend.kqueue, listen_fd, handler),
+            else => @compileError("Unsupported platform"),
         }
     }
 
@@ -230,6 +235,7 @@ pub const Io = struct {
                         if (self.connections.acquire()) |conn| {
                             conn.fd = new_fd;
                             conn.state = .reading;
+                            conn.context = self.handler_context;
 
                             // Get buffer from pool
                             if (self.buffer_pool.acquire()) |buf| {
@@ -320,6 +326,7 @@ pub const Io = struct {
 
         conn.fd = new_fd;
         conn.state = .idle;
+        conn.context = self.handler_context;
 
         // Get buffers from pool
         const read_buf = self.buffer_pool.acquire() orelse return error.BufferPoolExhausted;
@@ -335,10 +342,11 @@ pub const Io = struct {
     }
 
     fn closeConnection(self: *Io, kq: *Kqueue, conn: *Connection) void {
+        if (conn.state == .closed) return; // Already closed
+        conn.state = .closed; // Mark closed first to prevent double-close
         kq.remove(conn.fd, .read) catch {};
         kq.remove(conn.fd, .write) catch {};
         posix.close(conn.fd);
-        conn.state = .closed;
         self.connections.release(conn);
     }
 
@@ -347,9 +355,10 @@ pub const Io = struct {
     }
 
     pub fn deinit(self: *Io) void {
-        switch (self.backend) {
-            .kqueue => |*kq| kq.deinit(),
-            .io_uring => |*ring| ring.deinit(),
+        switch (builtin.os.tag) {
+            .linux => self.backend.io_uring.deinit(),
+            .macos, .freebsd => self.backend.kqueue.deinit(),
+            else => {},
         }
         self.connections.deinit();
         self.buffer_pool.deinit();
@@ -368,8 +377,7 @@ const ConnectionPool = struct {
             c.state = .closed;
         }
 
-        var free = std.ArrayList(usize).init(allocator);
-        try free.ensureTotalCapacity(max);
+        var free = try std.ArrayList(usize).initCapacity(allocator, max);
         for (0..max) |i| {
             free.appendAssumeCapacity(max - 1 - i);
         }
@@ -382,21 +390,23 @@ const ConnectionPool = struct {
     }
 
     pub fn acquire(self: *ConnectionPool) ?*Io.Connection {
-        const idx = self.free_list.popOrNull() orelse return null;
+        const idx = self.free_list.pop() orelse return null;
         return &self.connections[idx];
     }
 
     pub fn get(self: *ConnectionPool, idx: usize) ?*Io.Connection {
         if (idx >= self.connections.len) return null;
-        return &self.connections[idx];
+        const conn = &self.connections[idx];
+        if (conn.state == .closed) return null;
+        return conn;
     }
 
     pub fn release(self: *ConnectionPool, conn: *Io.Connection) void {
-        self.free_list.append(conn.index) catch {};
+        self.free_list.append(self.allocator, conn.index) catch {};
     }
 
     pub fn deinit(self: *ConnectionPool) void {
         self.allocator.free(self.connections);
-        self.free_list.deinit();
+        self.free_list.deinit(self.allocator);
     }
 };

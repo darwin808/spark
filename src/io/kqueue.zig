@@ -5,7 +5,9 @@ const posix = std.posix;
 pub const Kqueue = struct {
     kq: posix.fd_t,
     events: []posix.Kevent,
+    result_events: []Event,
     changelist: std.ArrayList(posix.Kevent),
+    allocator: std.mem.Allocator,
 
     pub const Event = struct {
         fd: posix.fd_t,
@@ -15,11 +17,11 @@ pub const Kqueue = struct {
         flags: u16,
 
         pub fn isEof(self: Event) bool {
-            return (self.flags & posix.system.EV_EOF) != 0;
+            return (self.flags & 0x8000) != 0;
         }
 
         pub fn isError(self: Event) bool {
-            return (self.flags & posix.system.EV_ERROR) != 0;
+            return (self.flags & 0x4000) != 0;
         }
     };
 
@@ -35,22 +37,29 @@ pub const Kqueue = struct {
         const events = try allocator.alloc(posix.Kevent, max_events);
         errdefer allocator.free(events);
 
+        const result_events = try allocator.alloc(Event, max_events);
+        errdefer allocator.free(result_events);
+
+        const changelist = try std.ArrayList(posix.Kevent).initCapacity(allocator, 0);
+
         return .{
             .kq = kq,
             .events = events,
-            .changelist = std.ArrayList(posix.Kevent).init(allocator),
+            .result_events = result_events,
+            .changelist = changelist,
+            .allocator = allocator,
         };
     }
 
     /// Register a file descriptor for events.
     pub fn register(self: *Kqueue, fd: posix.fd_t, filter: Filter, udata: usize) !void {
-        try self.changelist.append(.{
+        try self.changelist.append(self.allocator, .{
             .ident = @intCast(fd),
             .filter = switch (filter) {
-                .read => posix.system.EVFILT_READ,
-                .write => posix.system.EVFILT_WRITE,
+                .read => -1,  // EVFILT_READ
+                .write => -2, // EVFILT_WRITE
             },
-            .flags = posix.system.EV_ADD | posix.system.EV_ENABLE,
+            .flags = 0x0001 | 0x0004, // EV_ADD | EV_ENABLE
             .fflags = 0,
             .data = 0,
             .udata = udata,
@@ -60,13 +69,13 @@ pub const Kqueue = struct {
     /// Modify the filter for a file descriptor.
     pub fn modify(self: *Kqueue, fd: posix.fd_t, old_filter: Filter, new_filter: Filter, udata: usize) !void {
         // Delete old filter
-        try self.changelist.append(.{
+        try self.changelist.append(self.allocator, .{
             .ident = @intCast(fd),
             .filter = switch (old_filter) {
-                .read => posix.system.EVFILT_READ,
-                .write => posix.system.EVFILT_WRITE,
+                .read => -1,  // EVFILT_READ
+                .write => -2, // EVFILT_WRITE
             },
-            .flags = posix.system.EV_DELETE,
+            .flags = 0x0002, // EV_DELETE
             .fflags = 0,
             .data = 0,
             .udata = udata,
@@ -78,13 +87,13 @@ pub const Kqueue = struct {
 
     /// Remove a file descriptor from monitoring.
     pub fn remove(self: *Kqueue, fd: posix.fd_t, filter: Filter) !void {
-        try self.changelist.append(.{
+        try self.changelist.append(self.allocator, .{
             .ident = @intCast(fd),
             .filter = switch (filter) {
-                .read => posix.system.EVFILT_READ,
-                .write => posix.system.EVFILT_WRITE,
+                .read => -1,  // EVFILT_READ
+                .write => -2, // EVFILT_WRITE
             },
-            .flags = posix.system.EV_DELETE,
+            .flags = 0x0002, // EV_DELETE
             .fflags = 0,
             .data = 0,
             .udata = 0,
@@ -94,8 +103,8 @@ pub const Kqueue = struct {
     /// Wait for events with timeout in milliseconds.
     pub fn wait(self: *Kqueue, timeout_ms: ?u32) ![]Event {
         const timeout: ?posix.timespec = if (timeout_ms) |ms| .{
-            .tv_sec = @intCast(ms / 1000),
-            .tv_nsec = @intCast((ms % 1000) * 1_000_000),
+            .sec = @intCast(ms / 1000),
+            .nsec = @intCast((ms % 1000) * 1_000_000),
         } else null;
 
         const n = posix.kevent(
@@ -103,31 +112,28 @@ pub const Kqueue = struct {
             self.changelist.items,
             self.events,
             if (timeout) |*t| t else null,
-        ) catch |err| switch (err) {
-            error.Interrupted => return &.{},
-            else => return err,
-        };
+        ) catch return &.{};
 
         self.changelist.clearRetainingCapacity();
 
         // Convert to our Event type
-        const result: []Event = @ptrCast(self.events[0..n]);
         for (self.events[0..n], 0..) |ev, i| {
-            result[i] = .{
+            self.result_events[i] = .{
                 .fd = @intCast(ev.ident),
-                .filter = if (ev.filter == posix.system.EVFILT_READ) .read else .write,
+                .filter = if (ev.filter == -1) .read else .write, // -1 = EVFILT_READ
                 .data = ev.data,
                 .udata = ev.udata,
                 .flags = ev.flags,
             };
         }
 
-        return result;
+        return self.result_events[0..n];
     }
 
     pub fn deinit(self: *Kqueue) void {
         posix.close(self.kq);
-        self.changelist.allocator.free(self.events);
-        self.changelist.deinit();
+        self.allocator.free(self.events);
+        self.allocator.free(self.result_events);
+        self.changelist.deinit(self.allocator);
     }
 };

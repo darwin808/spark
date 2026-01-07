@@ -126,17 +126,81 @@ pub const Spark = struct {
 
         std.log.info("Spark listening on http://{s}:{d}", .{ self.config.host, port });
 
-        try self.io.?.run(listen_fd, self.handleConnection());
+        try self.io.?.run(listen_fd, handleRequest, self);
     }
 
-    fn handleConnection(self: *Spark) *const fn (*Io.Connection) void {
-        _ = self;
-        return struct {
-            fn handler(conn: *Io.Connection) void {
-                _ = conn;
-                // Placeholder - actual request handling
+    fn handleRequest(conn: *Io.Connection) void {
+        // Get Spark instance from connection context
+        const self: *Spark = @ptrCast(@alignCast(conn.context orelse return));
+
+        // Parse HTTP request
+        var parser = HttpParser{};
+        const parse_result = parser.parse(conn.readData()) catch |err| {
+            switch (err) {
+                error.Incomplete => return, // Need more data, wait for next read
+                else => {
+                    // Send 400 Bad Request
+                    const bad_request = "HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\n\r\nBad Request";
+                    @memcpy(conn.write_buffer[0..bad_request.len], bad_request);
+                    conn.write_len = bad_request.len;
+                    return;
+                },
             }
-        }.handler;
+        };
+
+        // Create request object
+        var request = Request.init(
+            parse_result.method,
+            parse_result.path,
+            parse_result.query,
+            parse_result.headers,
+            parse_result.body,
+            self.allocator,
+        );
+
+        // Create response object
+        var response = Response.init(self.allocator);
+        defer response.deinit();
+
+        // Create context
+        var ctx = Context.init(&request, &response, self.allocator);
+
+        // Match route
+        if (self.router.match(parse_result.method, parse_result.path, self.allocator)) |match_result| {
+            // Copy route params to request
+            for (match_result.params) |p| {
+                request.params.put(self.allocator, p.name, p.value) catch {};
+            }
+
+            // Execute middleware chain then handler
+            for (self.router.middleware.items) |mw| {
+                mw(&ctx) catch {};
+                if (!ctx._next_called) break;
+                ctx._next_called = false;
+            }
+
+            // Call the route handler
+            if (!response.written) {
+                match_result.handler(&ctx) catch |err| {
+                    // Handler error - send 500
+                    ctx.internalError();
+                    std.log.err("Handler error: {}", .{err});
+                };
+            }
+        } else {
+            // No route matched - 404
+            ctx.notFound();
+        }
+
+        // Serialize response to write buffer
+        const len = response.serialize(conn.write_buffer) catch {
+            // Serialization failed - send minimal error
+            const server_error = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 21\r\n\r\nInternal Server Error";
+            @memcpy(conn.write_buffer[0..server_error.len], server_error);
+            conn.write_len = server_error.len;
+            return;
+        };
+        conn.write_len = len;
     }
 
     /// Stop the server.

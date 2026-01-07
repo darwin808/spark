@@ -106,7 +106,8 @@ pub const Router = struct {
         _ = self;
 
         var params = std.ArrayListUnmanaged(ParamPair){};
-        var path_iter = std.mem.splitScalar(u8, if (path.len > 0 and path[0] == '/') path[1..] else path, '/');
+        const normalized_path = if (path.len > 0 and path[0] == '/') path[1..] else path;
+        var path_iter = std.mem.splitScalar(u8, normalized_path, '/');
         var seg_idx: usize = 0;
 
         while (seg_idx < r.segments.len) {
@@ -136,8 +137,10 @@ pub const Router = struct {
             seg_idx += 1;
         }
 
-        // Check if we consumed all path segments
-        if (path_iter.next() != null) return null;
+        // Check if we consumed all path segments (skip empty parts)
+        while (path_iter.next()) |remaining| {
+            if (remaining.len > 0) return null; // Non-empty segment remaining = no match
+        }
 
         return params.items;
     }
