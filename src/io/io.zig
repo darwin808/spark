@@ -16,7 +16,7 @@ pub const Io = struct {
     buffer_pool: BufferPool,
     config: Config,
     running_owned: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    running: *std.atomic.Value(bool) = undefined,
+    running: ?*std.atomic.Value(bool) = null, // null = use running_owned
     handler_context: ?*anyopaque = null,
 
     const Backend = union(enum) {
@@ -84,16 +84,14 @@ pub const Io = struct {
             config.buffer_size,
         );
 
-        var io = Io{
+        return .{
             .backend = backend,
             .allocator = allocator,
             .connections = try ConnectionPool.init(allocator, config.max_connections),
             .buffer_pool = buffer_pool,
             .config = config,
+            // running = null means use running_owned (single-threaded mode)
         };
-        // Point to own flag for single-threaded mode
-        io.running = &io.running_owned;
-        return io;
     }
 
     /// Initialize with a shared running flag (for multi-threaded mode).
@@ -145,6 +143,11 @@ pub const Io = struct {
         return fd;
     }
 
+    /// Get the running flag (owned or shared).
+    fn getRunning(self: *Io) *std.atomic.Value(bool) {
+        return self.running orelse &self.running_owned;
+    }
+
     /// Run the event loop.
     pub fn run(
         self: *Io,
@@ -152,7 +155,7 @@ pub const Io = struct {
         handler: *const fn (*Connection) void,
         context: ?*anyopaque,
     ) !void {
-        self.running.store(true, .release);
+        self.getRunning().store(true, .release);
         self.handler_context = context;
 
         switch (builtin.os.tag) {
@@ -171,7 +174,7 @@ pub const Io = struct {
         // Register listen socket
         try kq.register(listen_fd, .read, 0);
 
-        while (self.running.load(.acquire)) {
+        while (self.getRunning().load(.acquire)) {
             const events = try kq.wait(100);
 
             for (events) |ev| {
@@ -254,7 +257,7 @@ pub const Io = struct {
         try ring.queueAccept(listen_fd, 0);
         _ = try ring.submit();
 
-        while (self.running.load(.acquire)) {
+        while (self.getRunning().load(.acquire)) {
             const completions = try ring.submitAndWait(1);
 
             for (completions) |cqe| {
@@ -383,7 +386,7 @@ pub const Io = struct {
     }
 
     pub fn stop(self: *Io) void {
-        self.running.store(false, .release);
+        self.getRunning().store(false, .release);
     }
 
     pub fn deinit(self: *Io) void {
