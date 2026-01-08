@@ -43,6 +43,11 @@ pub const ValidationErrors = @import("core/errors.zig").ValidationErrors;
 // JSON
 pub const json = @import("json/json.zig");
 
+// I/O types (for advanced users)
+pub const Io = @import("io/io.zig").Io;
+pub const Worker = @import("io/worker.zig").Worker;
+pub const WorkerPool = @import("io/worker_pool.zig").WorkerPool;
+
 // Built-in middleware
 pub const middleware = struct {
     pub const cors = @import("middleware/cors.zig");

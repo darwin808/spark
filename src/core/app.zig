@@ -11,6 +11,7 @@ const Response = @import("response.zig").Response;
 const HttpParser = @import("../http/parser.zig").Parser;
 const Method = @import("../http/method.zig").Method;
 const Io = @import("../io/io.zig").Io;
+const WorkerPool = @import("../io/worker_pool.zig").WorkerPool;
 const middlewareExec = @import("middleware.zig");
 const recovery = @import("../middleware/recovery.zig");
 
@@ -23,6 +24,7 @@ pub const Spark = struct {
     config: Config,
     allocator: std.mem.Allocator,
     io: ?Io = null,
+    workers: ?WorkerPool = null,
 
     pub const Config = struct {
         port: u16 = 3000,
@@ -37,6 +39,8 @@ pub const Spark = struct {
         max_headers: usize = 100,
         max_query_params: usize = 100,
         max_uri_length: usize = 8 * 1024, // 8KB
+        // Threading
+        num_workers: ?usize = null, // null = auto-detect CPU count
     };
 
     /// Initialize a new Spark application.
@@ -127,16 +131,50 @@ pub const Spark = struct {
 
     /// Start the server on specific port.
     pub fn listenOn(self: *Spark, port: u16) !void {
-        self.io = try Io.init(self.allocator, .{
-            .max_connections = self.config.max_connections,
-            .buffer_size = self.config.buffer_size,
-        });
+        const num_workers = self.config.num_workers orelse (std.Thread.getCpuCount() catch 1);
 
-        const listen_fd = try self.io.?.listen(self.config.host, port);
+        if (num_workers == 1) {
+            // Single-threaded mode (original behavior)
+            self.io = try Io.init(self.allocator, .{
+                .max_connections = self.config.max_connections,
+                .buffer_size = self.config.buffer_size,
+            });
 
-        std.log.info("Spark listening on http://{s}:{d}", .{ self.config.host, port });
+            const listen_fd = try self.io.?.listen(self.config.host, port);
 
-        try self.io.?.run(listen_fd, handleRequest, self);
+            std.log.info("Spark listening on http://{s}:{d}", .{ self.config.host, port });
+
+            try self.io.?.run(listen_fd, handleRequest, self);
+        } else {
+            // Multi-threaded mode with WorkerPool
+            self.workers = try WorkerPool.init(self.allocator, .{
+                .num_workers = num_workers,
+                .host = self.config.host,
+                .port = port,
+                .io_config = .{
+                    .max_connections = self.config.max_connections,
+                    .buffer_size = self.config.buffer_size,
+                },
+            });
+
+            std.log.info("Spark listening on http://{s}:{d} ({d} workers)", .{
+                self.config.host,
+                port,
+                num_workers,
+            });
+
+            try self.workers.?.start(.{
+                .host = self.config.host,
+                .port = port,
+                .io_config = .{
+                    .max_connections = self.config.max_connections,
+                    .buffer_size = self.config.buffer_size,
+                },
+            }, handleRequest, self);
+
+            // Block main thread until shutdown
+            self.workers.?.join();
+        }
     }
 
     fn handleRequest(conn: *Io.Connection) void {
@@ -239,6 +277,9 @@ pub const Spark = struct {
 
     /// Stop the server.
     pub fn shutdown(self: *Spark) void {
+        if (self.workers) |*w| {
+            w.stop();
+        }
         if (self.io) |*io| {
             io.stop();
         }
@@ -280,6 +321,9 @@ pub const Spark = struct {
 
     pub fn deinit(self: *Spark) void {
         self.router.deinit();
+        if (self.workers) |*w| {
+            w.deinit();
+        }
         if (self.io) |*io| {
             io.deinit();
         }

@@ -15,7 +15,8 @@ pub const Io = struct {
     connections: ConnectionPool,
     buffer_pool: BufferPool,
     config: Config,
-    running: bool = false,
+    running_owned: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    running: *std.atomic.Value(bool) = undefined,
     handler_context: ?*anyopaque = null,
 
     const Backend = union(enum) {
@@ -83,12 +84,43 @@ pub const Io = struct {
             config.buffer_size,
         );
 
+        var io = Io{
+            .backend = backend,
+            .allocator = allocator,
+            .connections = try ConnectionPool.init(allocator, config.max_connections),
+            .buffer_pool = buffer_pool,
+            .config = config,
+        };
+        // Point to own flag for single-threaded mode
+        io.running = &io.running_owned;
+        return io;
+    }
+
+    /// Initialize with a shared running flag (for multi-threaded mode).
+    pub fn initShared(
+        allocator: std.mem.Allocator,
+        config: Config,
+        running: *std.atomic.Value(bool),
+    ) !Io {
+        const backend: Backend = switch (builtin.os.tag) {
+            .linux => .{ .io_uring = try IoUring.init(allocator, 4096) },
+            .macos, .freebsd => .{ .kqueue = try Kqueue.init(allocator, config.max_events) },
+            else => @compileError("Unsupported platform. Spark requires Linux or macOS."),
+        };
+
+        const buffer_pool = try BufferPool.init(
+            allocator,
+            config.max_connections * 2,
+            config.buffer_size,
+        );
+
         return .{
             .backend = backend,
             .allocator = allocator,
             .connections = try ConnectionPool.init(allocator, config.max_connections),
             .buffer_pool = buffer_pool,
             .config = config,
+            .running = running, // Use shared flag
         };
     }
 
@@ -120,7 +152,7 @@ pub const Io = struct {
         handler: *const fn (*Connection) void,
         context: ?*anyopaque,
     ) !void {
-        self.running = true;
+        self.running.store(true, .release);
         self.handler_context = context;
 
         switch (builtin.os.tag) {
@@ -139,7 +171,7 @@ pub const Io = struct {
         // Register listen socket
         try kq.register(listen_fd, .read, 0);
 
-        while (self.running) {
+        while (self.running.load(.acquire)) {
             const events = try kq.wait(100);
 
             for (events) |ev| {
@@ -222,7 +254,7 @@ pub const Io = struct {
         try ring.queueAccept(listen_fd, 0);
         _ = try ring.submit();
 
-        while (self.running) {
+        while (self.running.load(.acquire)) {
             const completions = try ring.submitAndWait(1);
 
             for (completions) |cqe| {
@@ -351,7 +383,7 @@ pub const Io = struct {
     }
 
     pub fn stop(self: *Io) void {
-        self.running = false;
+        self.running.store(false, .release);
     }
 
     pub fn deinit(self: *Io) void {

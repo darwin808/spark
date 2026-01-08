@@ -72,15 +72,16 @@ Make development fast and enjoyable.
 
 ---
 
-## Phase 3: Multi-threading
+## Phase 3: Multi-threading ✅
 
 Single-threaded is the biggest current bottleneck.
 
-### 3.1 Thread-per-core Model
-- [ ] SO_REUSEPORT for multiple listeners
-- [ ] One event loop per core (no cross-thread communication)
-- [ ] Thread-local connection pools
-- [ ] Thread-local arena allocators
+### 3.1 Thread-per-core Model ✅
+- [x] SO_REUSEPORT for multiple listeners (kernel load-balances accepts)
+- [x] One event loop per core (no cross-thread communication)
+- [x] Thread-local connection pools
+- [x] Thread-local buffer pools
+- [x] Auto-detect CPU count (configurable via `num_workers`)
 
 ### 3.2 Work Stealing (Optional)
 - [ ] Lock-free work queue for load balancing
@@ -232,7 +233,7 @@ Secondary: p99 latency under load.
 
 1. **Phase 1** ✅ - Benchmarks done
 2. **Phase 2** ✅ - Developer experience (hot reload implemented)
-3. **Phase 3** - Multi-threading is highest impact for performance
+3. **Phase 3** ✅ - Multi-threading (thread-per-core with SO_REUSEPORT)
 4. **Phase 4** - io_uring optimization (Linux-specific wins)
 5. **Phase 5** - SIMD parsing (CPU-bound improvements)
 6. **Phase 6** - Memory optimization (polish)
@@ -246,7 +247,7 @@ Secondary: p99 latency under load.
 These are low-effort, high-impact:
 
 1. ~~**Hot reload**~~ ✅ - Dramatically improves development speed
-2. **SO_REUSEPORT multi-threading** - 4-8x throughput on multi-core
+2. ~~**SO_REUSEPORT multi-threading**~~ ✅ - 4-8x throughput on multi-core
 3. **Multishot accept** - Reduces accept syscalls
 4. **Pre-computed Date header** - Updated once per second, not per request
 5. **Batch io_uring submissions** - Single syscall for multiple ops
@@ -255,7 +256,13 @@ These are low-effort, high-impact:
 
 ## Changelog
 
-### v0.2.0 (Current)
+### v0.3.0 (Current)
+- Multi-threading with thread-per-core model
+- SO_REUSEPORT for kernel load-balancing across workers
+- Auto-detect CPU count (configurable via `num_workers`)
+- Worker and WorkerPool abstractions for advanced use
+
+### v0.2.0
 - Hot reload development mode (`zig build dev -- <target>`)
 - File watching via kqueue (macOS/BSD) and inotify (Linux)
 - Signal handling for graceful shutdown
