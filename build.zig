@@ -92,4 +92,35 @@ pub fn build(b: *std.Build) void {
     const run_lib_tests = b.addRunArtifact(lib_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_tests.step);
+
+    // Dev mode (hot reload)
+    const spark_dev_mod = b.addModule("spark-dev", .{
+        .root_source_file = b.path("src/dev/dev.zig"),
+        .target = target,
+        .optimize = .Debug,
+    });
+
+    const dev_mod = b.createModule(.{
+        .root_source_file = b.path("tools/spark-dev.zig"),
+        .target = target,
+        .optimize = .Debug, // Always debug for fast compilation
+    });
+    dev_mod.addImport("spark-dev", spark_dev_mod);
+
+    const dev_exe = b.addExecutable(.{
+        .name = "spark-dev",
+        .root_module = dev_mod,
+    });
+
+    const dev_install = b.addInstallArtifact(dev_exe, .{});
+    const dev_run = b.addRunArtifact(dev_exe);
+    dev_run.step.dependOn(&dev_install.step);
+
+    // Pass through command line args: zig build dev -- run-hello_world
+    if (b.args) |args| {
+        dev_run.addArgs(args);
+    }
+
+    const dev_step = b.step("dev", "Run in development mode with hot reload");
+    dev_step.dependOn(&dev_run.step);
 }

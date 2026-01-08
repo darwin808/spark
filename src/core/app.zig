@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const posix = std.posix;
 const Router = @import("router.zig").Router;
 const RouteGroup = @import("router.zig").RouteGroup;
 const Handler = @import("router.zig").Handler;
@@ -11,6 +13,9 @@ const Method = @import("../http/method.zig").Method;
 const Io = @import("../io/io.zig").Io;
 const middlewareExec = @import("middleware.zig");
 const recovery = @import("../middleware/recovery.zig");
+
+// Global reference for signal handlers (only one server per process)
+var global_spark: ?*Spark = null;
 
 /// Spark web application.
 pub const Spark = struct {
@@ -236,6 +241,40 @@ pub const Spark = struct {
     pub fn shutdown(self: *Spark) void {
         if (self.io) |*io| {
             io.stop();
+        }
+    }
+
+    /// Enable signal handlers for graceful shutdown (SIGTERM, SIGINT).
+    /// This allows the server to be stopped cleanly by external signals.
+    pub fn enableSignalHandlers(self: *Spark) !void {
+        global_spark = self;
+
+        const handler = posix.Sigaction{
+            .handler = .{ .handler = handleShutdownSignal },
+            .mask = posix.empty_sigset,
+            .flags = 0,
+        };
+
+        try posix.sigaction(posix.SIG.TERM, &handler, null);
+        try posix.sigaction(posix.SIG.INT, &handler, null);
+    }
+
+    /// Disable signal handlers and clear global reference.
+    pub fn disableSignalHandlers(_: *Spark) void {
+        const default_handler = posix.Sigaction{
+            .handler = .{ .handler = posix.SIG.DFL },
+            .mask = posix.empty_sigset,
+            .flags = 0,
+        };
+
+        posix.sigaction(posix.SIG.TERM, &default_handler, null) catch {};
+        posix.sigaction(posix.SIG.INT, &default_handler, null) catch {};
+        global_spark = null;
+    }
+
+    fn handleShutdownSignal(_: c_int) callconv(.C) void {
+        if (global_spark) |spark| {
+            spark.shutdown();
         }
     }
 
