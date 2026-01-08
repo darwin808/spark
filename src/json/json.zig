@@ -1,7 +1,9 @@
 const std = @import("std");
 pub const Parser = @import("parser.zig").Parser;
 pub const Serializer = @import("serializer.zig").Serializer;
+pub const FastSerializer = @import("fast_serializer.zig").FastSerializer;
 const serializer = @import("serializer.zig");
+const fast_serializer = @import("fast_serializer.zig");
 
 /// Parse JSON string into type T.
 pub fn parse(comptime T: type, input: []const u8, allocator: std.mem.Allocator) Parser.Error!T {

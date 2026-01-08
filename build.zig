@@ -44,6 +44,9 @@ pub fn build(b: *std.Build) void {
         "json",
         "db",
         "queries",
+        "crud",
+        "crud_fast",
+        "plaintext_fast",
     };
 
     var bench_steps: [benchmarks.len]?*std.Build.Step = [_]?*std.Build.Step{null} ** benchmarks.len;

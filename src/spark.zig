@@ -43,6 +43,19 @@ pub const ValidationErrors = @import("core/errors.zig").ValidationErrors;
 // JSON
 pub const json = @import("json/json.zig");
 
+// Fast/optimized modules (for benchmarks and advanced users)
+pub const core = struct {
+    pub const fast_router = @import("core/fast_router.zig");
+    pub const fast_response = @import("core/fast_response.zig");
+    pub const fast_context = @import("core/fast_context.zig");
+    pub const date_cache = @import("core/date_cache.zig");
+    pub const Request = @import("core/request.zig").Request;
+};
+pub const http = struct {
+    pub const Parser = @import("http/parser.zig").Parser;
+    pub const Method = @import("http/method.zig").Method;
+};
+
 // I/O types (for advanced users)
 pub const Io = @import("io/io.zig").Io;
 pub const Worker = @import("io/worker.zig").Worker;
@@ -117,4 +130,16 @@ test "simd" {
 
 test "core/date_cache" {
     _ = @import("core/date_cache.zig");
+}
+
+test "core/fast_router" {
+    _ = @import("core/fast_router.zig");
+}
+
+test "core/fast_response" {
+    _ = @import("core/fast_response.zig");
+}
+
+test "json/fast_serializer" {
+    _ = @import("json/fast_serializer.zig");
 }

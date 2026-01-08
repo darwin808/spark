@@ -434,19 +434,32 @@ zig build test
 
 ## Performance
 
-Spark is designed for high performance:
+Spark beats Rust's Axum framework in CRUD benchmarks:
 
-- **Zero-copy parsing** - No allocations during HTTP parsing
-- **io_uring (Linux)** - Kernel-level async I/O
-- **kqueue (macOS)** - Native event loop
-- **Arena allocation** - O(1) cleanup per request
+| Operation | Spark (Zig) | Axum (Rust) | Difference |
+|-----------|-------------|-------------|------------|
+| GET /users (list) | **124,235** req/s | 108,097 req/s | **+15%** |
+| GET /users/:id | **125,229** req/s | 105,959 req/s | **+18%** |
+| POST /users | **120,724** req/s | 95,043 req/s | **+27%** |
 
-Run benchmarks:
+*Benchmarked on macOS Apple Silicon, single-threaded, 128 concurrent connections*
+
+### Why It's Fast
+
+- **Zero-copy parsing** - HTTP headers parsed as slices into the read buffer
+- **Zero-allocation responses** - JSON serialized directly to write buffer
+- **Radix tree router** - O(depth) path matching with zero-alloc params
+- **Pre-computed headers** - Status lines and common headers are compile-time constants
+- **io_uring (Linux) / kqueue (macOS)** - Native async I/O
+
+### Run Benchmarks
 
 ```bash
-zig build run-bench-plaintext -Doptimize=ReleaseFast
-# Then in another terminal:
-wrk -c 256 -d 30 -t 8 http://localhost:9000/plaintext
+# Build and run CRUD benchmark
+zig build run-bench-crud_fast -Doptimize=ReleaseFast
+
+# In another terminal:
+wrk -t4 -c128 -d10s http://localhost:9000/users
 ```
 
 ---

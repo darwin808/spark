@@ -9,6 +9,7 @@ pub fn main() !void {
     var app = spark.initWithConfig(allocator, .{
         .port = 9000,
         .max_connections = 10000,
+        .num_workers = 8, // Explicitly use 8 workers
     });
     defer app.deinit();
 
