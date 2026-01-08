@@ -46,16 +46,16 @@ Can't optimize what you can't measure.
 
 ---
 
-## Phase 2: Developer Experience
+## Phase 2: Developer Experience ✅
 
 Make development fast and enjoyable.
 
-### 2.1 Hot Reload
-- [ ] File watcher for source changes (using inotify/FSEvents)
-- [ ] Automatic recompilation on change
-- [ ] Graceful server restart (drain connections, then restart)
-- [ ] Sub-second reload times
-- [ ] CLI flag: `--watch` or `-w` to enable
+### 2.1 Hot Reload ✅
+- [x] File watcher for source changes (kqueue on macOS, inotify on Linux)
+- [x] Automatic recompilation on change
+- [x] Graceful server restart (SIGTERM with drain timeout)
+- [x] Sub-second reload times
+- [x] Run with: `zig build dev -- run-hello_world`
 - [ ] Optional: WebSocket injection for browser auto-refresh
 
 ### 2.2 Better Error Messages
@@ -231,7 +231,7 @@ Secondary: p99 latency under load.
 ## Implementation Order
 
 1. **Phase 1** ✅ - Benchmarks done
-2. **Phase 2** - Developer experience (hot reload for faster iteration)
+2. **Phase 2** ✅ - Developer experience (hot reload implemented)
 3. **Phase 3** - Multi-threading is highest impact for performance
 4. **Phase 4** - io_uring optimization (Linux-specific wins)
 5. **Phase 5** - SIMD parsing (CPU-bound improvements)
@@ -245,7 +245,7 @@ Secondary: p99 latency under load.
 
 These are low-effort, high-impact:
 
-1. **Hot reload** - Dramatically improves development speed
+1. ~~**Hot reload**~~ ✅ - Dramatically improves development speed
 2. **SO_REUSEPORT multi-threading** - 4-8x throughput on multi-core
 3. **Multishot accept** - Reduces accept syscalls
 4. **Pre-computed Date header** - Updated once per second, not per request
@@ -255,7 +255,13 @@ These are low-effort, high-impact:
 
 ## Changelog
 
-### v0.1.0 (Current)
+### v0.2.0 (Current)
+- Hot reload development mode (`zig build dev -- <target>`)
+- File watching via kqueue (macOS/BSD) and inotify (Linux)
+- Signal handling for graceful shutdown
+- Automatic rebuild and server restart on file changes
+
+### v0.1.0
 - Initial release
 - Express-style routing (GET, POST, PUT, DELETE, PATCH)
 - JSON parsing/serialization with comptime reflection
