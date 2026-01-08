@@ -1,5 +1,7 @@
 # Spark
 
+[![CI](https://github.com/darwin808/spark/actions/workflows/ci.yml/badge.svg)](https://github.com/darwin808/spark/actions/workflows/ci.yml)
+
 A fast, lightweight web framework for Zig with Express.js-style ergonomics.
 
 ```zig
@@ -24,45 +26,42 @@ fn hello(ctx: *spark.Context) !void {
 
 ## Features
 
+- **Blazing fast** - SIMD-accelerated HTTP parsing, io_uring (Linux) / kqueue (macOS)
 - **Zero-copy parsing** - HTTP headers and body parsed without allocation
 - **Type-safe JSON** - Automatic serialization/deserialization using Zig's comptime reflection
 - **Express-style routing** - Familiar `.get()`, `.post()`, `.put()`, `.delete()` API
 - **Middleware support** - Built-in logger, CORS, and easy custom middleware
+- **Multi-threaded** - Thread-per-core model with SO_REUSEPORT load balancing
 - **Production-ready security** - Request size limits, header limits, DoS protection
-- **Cross-platform** - Linux (io_uring) and macOS (kqueue) support
 
 ## Requirements
 
 - Zig 0.13.0 or later
 - Linux or macOS
 
-## Quick Start
-
-### 1. Create a new project
+## Installation
 
 ```bash
+# Create a new project
 mkdir my-app && cd my-app
 zig init
+
+# Add Spark as a dependency
+zig fetch --save "git+https://github.com/darwin808/spark#v0.4.0"
 ```
 
-### 2. Add Spark as a dependency
-
-Edit `build.zig.zon`:
+Then add to your `build.zig`:
 
 ```zig
-.{
-    .name = "my-app",
-    .version = "0.1.0",
-    .dependencies = .{
-        .spark = .{
-            .url = "https://github.com/darwin808/spark/archive/refs/heads/main.tar.gz",
-            // Run `zig build` and it will tell you what hash to put here
-        },
-    },
-}
+const spark = b.dependency("spark", .{
+    .target = target,
+    .optimize = optimize,
+});
+exe.root_module.addImport("spark", spark.module("spark"));
 ```
 
-### 3. Configure build.zig
+<details>
+<summary>Full build.zig example</summary>
 
 ```zig
 const std = @import("std");
@@ -71,7 +70,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const spark_dep = b.dependency("spark", .{
+    const spark = b.dependency("spark", .{
         .target = target,
         .optimize = optimize,
     });
@@ -83,7 +82,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    exe.root_module.addImport("spark", spark_dep.module("spark"));
+    exe.root_module.addImport("spark", spark.module("spark"));
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
@@ -92,7 +91,9 @@ pub fn build(b: *std.Build) void {
 }
 ```
 
-### 4. Write your app
+</details>
+
+## Quick Start
 
 Create `src/main.zig`:
 
@@ -118,7 +119,7 @@ fn index(ctx: *spark.Context) !void {
 }
 ```
 
-### 5. Run it
+Run it:
 
 ```bash
 zig build run
