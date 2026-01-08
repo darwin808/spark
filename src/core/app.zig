@@ -14,6 +14,7 @@ const Io = @import("../io/io.zig").Io;
 const WorkerPool = @import("../io/worker_pool.zig").WorkerPool;
 const middlewareExec = @import("middleware.zig");
 const recovery = @import("../middleware/recovery.zig");
+const date_cache = @import("date_cache.zig");
 
 // Global reference for signal handlers (only one server per process)
 var global_spark: ?*Spark = null;
@@ -181,6 +182,14 @@ pub const Spark = struct {
         // Get Spark instance from connection context
         const self: *Spark = @ptrCast(@alignCast(conn.context orelse return));
 
+        // Update date cache (cheap check, formats only when second changes)
+        date_cache.global.update();
+
+        // Per-request arena - all allocations freed at end of request
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
         // Parse HTTP request with security limits from config
         var parser = HttpParser.initWithLimits(.{
             .max_uri_length = self.config.max_uri_length,
@@ -219,29 +228,29 @@ pub const Spark = struct {
             }
         };
 
-        // Create request object with security limits
+        // Create request object with security limits (uses arena)
         var request = Request.initWithLimits(
             parse_result.method,
             parse_result.path,
             parse_result.query,
             parse_result.headers,
             parse_result.body,
-            self.allocator,
+            alloc,
             self.config.max_query_params,
         );
 
-        // Create response object
-        var response = Response.init(self.allocator);
-        defer response.deinit();
+        // Create response object (fixed headers, no alloc needed)
+        var response = Response.init(alloc);
+        // No defer response.deinit() - arena handles cleanup
 
-        // Create context
-        var ctx = Context.init(&request, &response, self.allocator);
+        // Create context (uses arena)
+        var ctx = Context.init(&request, &response, alloc);
 
-        // Match route
-        if (self.router.match(parse_result.method, parse_result.path, self.allocator)) |match_result| {
+        // Match route (uses arena for param allocation)
+        if (self.router.match(parse_result.method, parse_result.path, alloc)) |match_result| {
             // Copy route params to request
             for (match_result.params) |p| {
-                request.params.put(self.allocator, p.name, p.value) catch {};
+                request.params.put(alloc, p.name, p.value) catch {};
             }
 
             // Execute middleware chain then handler

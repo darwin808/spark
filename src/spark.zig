@@ -48,6 +48,9 @@ pub const Io = @import("io/io.zig").Io;
 pub const Worker = @import("io/worker.zig").Worker;
 pub const WorkerPool = @import("io/worker_pool.zig").WorkerPool;
 
+// SIMD utilities (for advanced users)
+pub const simd = @import("simd/simd.zig");
+
 // Built-in middleware
 pub const middleware = struct {
     pub const cors = @import("middleware/cors.zig");
@@ -106,4 +109,12 @@ test "memory/allocators" {
 
 test "io/buffer_pool" {
     _ = @import("io/buffer_pool.zig");
+}
+
+test "simd" {
+    _ = @import("simd/simd.zig");
+}
+
+test "core/date_cache" {
+    _ = @import("core/date_cache.zig");
 }

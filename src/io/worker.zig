@@ -25,19 +25,6 @@ pub const Worker = struct {
         io_config: Io.Config = .{},
     };
 
-    /// Initialize a worker (does not start the thread).
-    pub fn init(
-        id: usize,
-        running: *std.atomic.Value(bool),
-        allocator: std.mem.Allocator,
-    ) Worker {
-        return .{
-            .id = id,
-            .running = running,
-            .allocator = allocator,
-        };
-    }
-
     /// Start the worker thread.
     pub fn start(
         self: *Worker,

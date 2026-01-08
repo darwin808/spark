@@ -89,32 +89,36 @@ Single-threaded is the biggest current bottleneck.
 
 ---
 
-## Phase 4: io_uring Optimization (Linux)
+## Phase 4: io_uring Optimization (Linux) ✅
 
 io_uring has features we're not using.
 
-### 4.1 Multishot Accept
-- [ ] IORING_ACCEPT_MULTISHOT - single SQE for multiple accepts
-- [ ] Reduces submission overhead for accept-heavy workloads
+### 4.1 Multishot Accept ✅
+- [x] IORING_ACCEPT_MULTISHOT - single SQE for multiple accepts
+- [x] Reduces submission overhead for accept-heavy workloads
+- [x] Configurable via `io_uring_multishot_accept` option
 
 ### 4.2 Provided Buffers (Buffer Rings)
 - [ ] IORING_OP_PROVIDE_BUFFERS - kernel-managed buffer pool
 - [ ] Eliminates user-space buffer management overhead
 - [ ] Automatic buffer selection by kernel
 
-### 4.3 Registered Buffers & Files
-- [ ] IORING_REGISTER_BUFFERS - pin buffers in kernel
-- [ ] IORING_REGISTER_FILES - avoid fd lookup per operation
-- [ ] Reduces per-operation overhead
+### 4.3 Registered Buffers & Files ✅
+- [x] IORING_REGISTER_BUFFERS - pin buffers in kernel
+- [x] IORING_REGISTER_FILES - avoid fd lookup per operation
+- [x] Reduces per-operation overhead
+- [x] APIs added: `registerBuffers`, `registerFiles`, `queueReadFixed`, `queueWriteFixed`
 
-### 4.4 Submission Batching
-- [ ] Batch multiple SQEs before submit
-- [ ] Single syscall for multiple operations
+### 4.4 Submission Batching ✅
+- [x] Batch multiple SQEs before submit
+- [x] Single syscall for multiple operations
+- [x] `reapCompletions()` for batch completion handling
 
-### 4.5 SQPOLL Mode
-- [ ] IORING_SETUP_SQPOLL - kernel polling thread
-- [ ] Zero syscalls for submissions
-- [ ] Trade CPU for latency
+### 4.5 SQPOLL Mode ✅
+- [x] IORING_SETUP_SQPOLL - kernel polling thread
+- [x] Zero syscalls for submissions
+- [x] Configurable via `io_uring_sqpoll` option
+- [x] Graceful fallback when permissions insufficient
 
 ---
 
@@ -234,7 +238,7 @@ Secondary: p99 latency under load.
 1. **Phase 1** ✅ - Benchmarks done
 2. **Phase 2** ✅ - Developer experience (hot reload implemented)
 3. **Phase 3** ✅ - Multi-threading (thread-per-core with SO_REUSEPORT)
-4. **Phase 4** - io_uring optimization (Linux-specific wins)
+4. **Phase 4** ✅ - io_uring optimization (multishot, registered buffers/files, SQPOLL)
 5. **Phase 5** - SIMD parsing (CPU-bound improvements)
 6. **Phase 6** - Memory optimization (polish)
 7. **Phase 7** - Protocol optimization (diminishing returns)
@@ -248,15 +252,24 @@ These are low-effort, high-impact:
 
 1. ~~**Hot reload**~~ ✅ - Dramatically improves development speed
 2. ~~**SO_REUSEPORT multi-threading**~~ ✅ - 4-8x throughput on multi-core
-3. **Multishot accept** - Reduces accept syscalls
+3. ~~**Multishot accept**~~ ✅ - Reduces accept syscalls
 4. **Pre-computed Date header** - Updated once per second, not per request
-5. **Batch io_uring submissions** - Single syscall for multiple ops
+5. ~~**Batch io_uring submissions**~~ ✅ - Single syscall for multiple ops
 
 ---
 
 ## Changelog
 
-### v0.3.0 (Current)
+### v0.4.0 (Current)
+- io_uring optimizations (Linux):
+  - Multishot accept (single SQE for multiple accepts)
+  - Registered buffers and files support
+  - SQPOLL mode for zero-syscall submissions
+  - Submission batching APIs
+- Configurable io_uring options: `io_uring_sqpoll`, `io_uring_multishot_accept`
+- Fixed dangling pointer bug in WorkerPool initialization
+
+### v0.3.0
 - Multi-threading with thread-per-core model
 - SO_REUSEPORT for kernel load-balancing across workers
 - Auto-detect CPU count (configurable via `num_workers`)

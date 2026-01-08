@@ -30,6 +30,9 @@ pub const Io = struct {
         max_events: usize = 1024,
         read_timeout_ms: u32 = 30000,
         write_timeout_ms: u32 = 30000,
+        // Linux io_uring options (ignored on other platforms)
+        io_uring_sqpoll: bool = false,
+        io_uring_multishot_accept: bool = true,
     };
 
     pub const Connection = struct {
@@ -73,7 +76,10 @@ pub const Io = struct {
 
     pub fn init(allocator: std.mem.Allocator, config: Config) !Io {
         const backend: Backend = switch (builtin.os.tag) {
-            .linux => .{ .io_uring = try IoUring.init(allocator, 4096) },
+            .linux => .{ .io_uring = try IoUring.init(allocator, .{
+                .entries = 4096,
+                .sqpoll = config.io_uring_sqpoll,
+            }) },
             .macos, .freebsd => .{ .kqueue = try Kqueue.init(allocator, config.max_events) },
             else => @compileError("Unsupported platform. Spark requires Linux or macOS."),
         };
@@ -101,7 +107,10 @@ pub const Io = struct {
         running: *std.atomic.Value(bool),
     ) !Io {
         const backend: Backend = switch (builtin.os.tag) {
-            .linux => .{ .io_uring = try IoUring.init(allocator, 4096) },
+            .linux => .{ .io_uring = try IoUring.init(allocator, .{
+                .entries = 4096,
+                .sqpoll = config.io_uring_sqpoll,
+            }) },
             .macos, .freebsd => .{ .kqueue = try Kqueue.init(allocator, config.max_events) },
             else => @compileError("Unsupported platform. Spark requires Linux or macOS."),
         };
@@ -253,8 +262,14 @@ pub const Io = struct {
         listen_fd: posix.fd_t,
         handler: *const fn (*Connection) void,
     ) !void {
-        // Queue initial accept
-        try ring.queueAccept(listen_fd, 0);
+        const use_multishot = self.config.io_uring_multishot_accept;
+
+        // Queue initial accept (multishot or single-shot based on config)
+        if (use_multishot) {
+            try ring.queueMultishotAccept(listen_fd, 0);
+        } else {
+            try ring.queueAccept(listen_fd, 0);
+        }
         _ = try ring.submit();
 
         while (self.getRunning().load(.acquire)) {
@@ -291,8 +306,19 @@ pub const Io = struct {
                             posix.close(new_fd);
                         }
                     }
-                    // Re-queue accept
-                    try ring.queueAccept(listen_fd, 0);
+
+                    // For multishot: only re-queue if the operation was cancelled (no more flag)
+                    // For single-shot: always re-queue
+                    if (use_multishot) {
+                        if (!cqe.hasMore()) {
+                            // Multishot was cancelled (e.g., listen socket closed), re-queue
+                            try ring.queueMultishotAccept(listen_fd, 0);
+                        }
+                        // Otherwise, multishot is still active, no need to re-queue
+                    } else {
+                        // Single-shot: always re-queue
+                        try ring.queueAccept(listen_fd, 0);
+                    }
                 } else {
                     // Connection operation
                     const conn_idx = user_data - 1;

@@ -18,25 +18,29 @@ pub const WorkerPool = struct {
     };
 
     /// Initialize the worker pool.
+    /// Note: Workers' running pointers are set in start() to avoid dangling pointer
+    /// issues when the pool is returned by value.
     pub fn init(allocator: std.mem.Allocator, config: Config) !WorkerPool {
         const num_workers = config.num_workers orelse detectCpuCount();
 
         const workers = try allocator.alloc(Worker, num_workers);
         errdefer allocator.free(workers);
 
-        var pool = WorkerPool{
+        // Initialize workers with placeholder values - running pointer set in start()
+        for (workers, 0..) |*w, i| {
+            w.* = Worker{
+                .id = i,
+                .running = undefined, // Will be set in start()
+                .allocator = allocator,
+            };
+        }
+
+        return WorkerPool{
             .workers = workers,
             .running = std.atomic.Value(bool).init(false),
             .allocator = allocator,
             .num_workers = num_workers,
         };
-
-        // Initialize workers with shared running flag
-        for (workers, 0..) |*w, i| {
-            w.* = Worker.init(i, &pool.running, allocator);
-        }
-
-        return pool;
     }
 
     /// Detect the number of CPU cores.
@@ -52,6 +56,11 @@ pub const WorkerPool = struct {
         context: ?*anyopaque,
     ) !void {
         self.running.store(true, .release);
+
+        // Set running pointer on all workers now that pool is in its final location
+        for (self.workers) |*w| {
+            w.running = &self.running;
+        }
 
         // Divide connections across workers
         const per_worker_connections = config.io_config.max_connections / self.num_workers;

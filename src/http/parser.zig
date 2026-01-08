@@ -1,8 +1,10 @@
 const std = @import("std");
 const Method = @import("method.zig").Method;
 const Headers = @import("headers.zig").Headers;
+const simd = @import("../simd/simd.zig");
 
-/// Zero-copy HTTP/1.1 request parser with security limits.
+/// SIMD-accelerated zero-copy HTTP/1.1 request parser.
+/// Uses vectorized scanning to find delimiters in 16-32 bytes at once.
 /// All returned slices point directly into the input buffer.
 pub const Parser = struct {
     state: State = .method,
@@ -79,63 +81,70 @@ pub const Parser = struct {
         return .{ .limits = limits };
     }
 
-    /// Parse HTTP request from buffer.
+    /// Parse HTTP request from buffer using SIMD-accelerated scanning.
     /// Returns Error.Incomplete if more data needed.
     pub fn parse(self: *Parser, buffer: []const u8) Error!Result {
-        while (self.pos < buffer.len) {
-            const c = buffer[self.pos];
+        const scanner = simd.Scanner.init(buffer);
 
+        while (self.pos < buffer.len) {
             switch (self.state) {
                 .method => {
-                    if (c == ' ') {
-                        self.method = Method.parse(buffer[self.mark..self.pos]) orelse
+                    // SIMD: Find space to end method
+                    if (scanner.findByte(self.pos, ' ')) |space_pos| {
+                        self.method = Method.parse(buffer[self.mark..space_pos]) orelse
                             return error.InvalidMethod;
-                        self.pos += 1;
+                        self.pos = space_pos + 1;
                         self.mark = self.pos;
                         self.state = .path;
                     } else {
-                        self.pos += 1;
+                        return error.Incomplete;
                     }
                 },
 
                 .path => {
-                    // Check URI length limit
-                    if (self.pos - self.mark > self.limits.max_uri_length) {
-                        return error.UriTooLong;
-                    }
-                    if (c == ' ') {
-                        self.path = buffer[self.mark..self.pos];
-                        self.pos += 1;
-                        self.mark = self.pos;
-                        self.state = .version;
-                    } else if (c == '?') {
-                        self.path = buffer[self.mark..self.pos];
-                        self.pos += 1;
-                        self.mark = self.pos;
-                        self.state = .query;
+                    // SIMD: Find space or '?' to end path
+                    if (scanner.findAnyOf2(self.pos, ' ', '?')) |delim_pos| {
+                        // Check URI length limit
+                        if (delim_pos - self.mark > self.limits.max_uri_length) {
+                            return error.UriTooLong;
+                        }
+
+                        if (buffer[delim_pos] == '?') {
+                            self.path = buffer[self.mark..delim_pos];
+                            self.pos = delim_pos + 1;
+                            self.mark = self.pos;
+                            self.state = .query;
+                        } else {
+                            self.path = buffer[self.mark..delim_pos];
+                            self.pos = delim_pos + 1;
+                            self.mark = self.pos;
+                            self.state = .version;
+                        }
                     } else {
-                        self.pos += 1;
+                        return error.Incomplete;
                     }
                 },
 
                 .query => {
-                    // Check URI length limit (path + query)
-                    if (self.pos - self.mark > self.limits.max_uri_length) {
-                        return error.UriTooLong;
-                    }
-                    if (c == ' ') {
-                        self.query = buffer[self.mark..self.pos];
-                        self.pos += 1;
+                    // SIMD: Find space to end query string
+                    if (scanner.findByte(self.pos, ' ')) |space_pos| {
+                        // Check URI length limit (path + query)
+                        if (space_pos - self.mark > self.limits.max_uri_length) {
+                            return error.UriTooLong;
+                        }
+                        self.query = buffer[self.mark..space_pos];
+                        self.pos = space_pos + 1;
                         self.mark = self.pos;
                         self.state = .version;
                     } else {
-                        self.pos += 1;
+                        return error.Incomplete;
                     }
                 },
 
                 .version => {
-                    if (c == '\r') {
-                        const version_str = buffer[self.mark..self.pos];
+                    // SIMD: Find CR to end version
+                    if (scanner.findByte(self.pos, '\r')) |cr_pos| {
+                        const version_str = buffer[self.mark..cr_pos];
                         if (std.mem.eql(u8, version_str, "HTTP/1.1")) {
                             self.version = .http_1_1;
                         } else if (std.mem.eql(u8, version_str, "HTTP/1.0")) {
@@ -143,15 +152,15 @@ pub const Parser = struct {
                         } else {
                             return error.InvalidVersion;
                         }
-                        self.pos += 1;
+                        self.pos = cr_pos + 1;
                         self.state = .version_lf;
                     } else {
-                        self.pos += 1;
+                        return error.Incomplete;
                     }
                 },
 
                 .version_lf => {
-                    if (c == '\n') {
+                    if (buffer[self.pos] == '\n') {
                         self.pos += 1;
                         self.mark = self.pos;
                         self.state = .header_name;
@@ -161,22 +170,26 @@ pub const Parser = struct {
                 },
 
                 .header_name => {
-                    if (c == '\r') {
-                        // End of headers
+                    // Check for end of headers first (CR at start of line)
+                    if (buffer[self.pos] == '\r') {
                         self.pos += 1;
                         self.state = .headers_end_lf;
-                    } else if (c == ':') {
+                        continue;
+                    }
+
+                    // SIMD: Find colon to end header name
+                    if (scanner.findByte(self.pos, ':')) |colon_pos| {
                         self.header_name_start = self.mark;
-                        self.header_name_end = self.pos;
-                        self.pos += 1;
+                        self.header_name_end = colon_pos;
+                        self.pos = colon_pos + 1;
                         self.state = .header_name_colon;
                     } else {
-                        self.pos += 1;
+                        return error.Incomplete;
                     }
                 },
 
                 .header_name_colon => {
-                    if (c == ' ') {
+                    if (buffer[self.pos] == ' ') {
                         self.pos += 1;
                         self.mark = self.pos;
                         self.state = .header_value;
@@ -187,7 +200,7 @@ pub const Parser = struct {
                 },
 
                 .header_value_start => {
-                    if (c == ' ') {
+                    if (buffer[self.pos] == ' ') {
                         self.pos += 1;
                     } else {
                         self.mark = self.pos;
@@ -196,15 +209,16 @@ pub const Parser = struct {
                 },
 
                 .header_value => {
-                    // Check header size limit
-                    const header_size = (self.header_name_end - self.header_name_start) + (self.pos - self.mark);
-                    if (header_size > self.limits.max_header_size) {
-                        return error.HeaderTooLarge;
-                    }
+                    // SIMD: Find CR to end header value
+                    if (scanner.findByte(self.pos, '\r')) |cr_pos| {
+                        // Check header size limit
+                        const header_size = (self.header_name_end - self.header_name_start) + (cr_pos - self.mark);
+                        if (header_size > self.limits.max_header_size) {
+                            return error.HeaderTooLarge;
+                        }
 
-                    if (c == '\r') {
                         const name = buffer[self.header_name_start..self.header_name_end];
-                        const value = buffer[self.mark..self.pos];
+                        const value = buffer[self.mark..cr_pos];
 
                         // Check header count limit
                         self.header_count += 1;
@@ -223,15 +237,15 @@ pub const Parser = struct {
                             self.content_length = len;
                         }
 
-                        self.pos += 1;
+                        self.pos = cr_pos + 1;
                         self.state = .header_lf;
                     } else {
-                        self.pos += 1;
+                        return error.Incomplete;
                     }
                 },
 
                 .header_lf => {
-                    if (c == '\n') {
+                    if (buffer[self.pos] == '\n') {
                         self.pos += 1;
                         self.mark = self.pos;
                         self.state = .header_name;
@@ -241,7 +255,7 @@ pub const Parser = struct {
                 },
 
                 .headers_end_lf => {
-                    if (c == '\n') {
+                    if (buffer[self.pos] == '\n') {
                         self.pos += 1;
                         self.body_start = self.pos;
 

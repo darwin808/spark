@@ -1,14 +1,19 @@
 const std = @import("std");
 const Status = @import("../http/status.zig").Status;
 const json_mod = @import("../json/json.zig");
+const date_cache = @import("date_cache.zig");
 
 /// HTTP Response builder with chainable API.
+/// Uses fixed-size header array to avoid allocations.
 pub const Response = struct {
     status: Status = .ok,
-    headers: HeaderList,
+    headers: [max_headers]Header = undefined,
+    headers_len: u8 = 0,
     body: Body = .{ .empty = {} },
     allocator: std.mem.Allocator,
     written: bool = false,
+
+    pub const max_headers: u8 = 16;
 
     pub const Body = union(enum) {
         empty: void,
@@ -16,7 +21,6 @@ pub const Response = struct {
         json_data: []const u8,
     };
 
-    pub const HeaderList = std.ArrayListUnmanaged(Header);
     pub const Header = struct {
         name: []const u8,
         value: []const u8,
@@ -24,7 +28,6 @@ pub const Response = struct {
 
     pub fn init(allocator: std.mem.Allocator) Response {
         return .{
-            .headers = .{},
             .allocator = allocator,
         };
     }
@@ -38,13 +41,17 @@ pub const Response = struct {
     /// Set a header - chainable.
     pub fn setHeader(self: *Response, name: []const u8, value: []const u8) *Response {
         // Check if header already exists
-        for (self.headers.items) |*h| {
+        for (self.headers[0..self.headers_len]) |*h| {
             if (std.ascii.eqlIgnoreCase(h.name, name)) {
                 h.value = value;
                 return self;
             }
         }
-        self.headers.append(self.allocator, .{ .name = name, .value = value }) catch {};
+        // Add new header if space available
+        if (self.headers_len < max_headers) {
+            self.headers[self.headers_len] = .{ .name = name, .value = value };
+            self.headers_len += 1;
+        }
         return self;
     }
 
@@ -94,8 +101,14 @@ pub const Response = struct {
         // Content-Length header
         try writer.print("Content-Length: {d}\r\n", .{body_bytes.len});
 
+        // Date header (pre-computed, updated once per second)
+        const date_str = date_cache.global.get();
+        if (date_str.len > 0) {
+            try writer.print("Date: {s}\r\n", .{date_str});
+        }
+
         // Other headers
-        for (self.headers.items) |h| {
+        for (self.headers[0..self.headers_len]) |h| {
             try writer.print("{s}: {s}\r\n", .{ h.name, h.value });
         }
 
@@ -108,13 +121,15 @@ pub const Response = struct {
         return fbs.pos;
     }
 
+    /// No-op - fixed array doesn't need cleanup.
+    /// Kept for API compatibility during transition.
     pub fn deinit(self: *Response) void {
-        self.headers.deinit(self.allocator);
+        _ = self;
     }
 
     pub fn reset(self: *Response) void {
         self.status = .ok;
-        self.headers.clearRetainingCapacity();
+        self.headers_len = 0;
         self.body = .{ .empty = {} };
         self.written = false;
     }
@@ -134,4 +149,53 @@ test "response serialization" {
     try std.testing.expect(std.mem.indexOf(u8, output, "HTTP/1.1 200 OK") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Content-Length: 5") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Hello") != null);
+}
+
+test "response header replacement" {
+    const allocator = std.testing.allocator;
+    var resp = Response.init(allocator);
+
+    _ = resp.setHeader("Content-Type", "text/plain");
+    _ = resp.setHeader("Content-Type", "application/json");
+
+    // Should have only one Content-Type header with the updated value
+    try std.testing.expectEqual(@as(u8, 1), resp.headers_len);
+    try std.testing.expectEqualStrings("application/json", resp.headers[0].value);
+}
+
+test "response max headers" {
+    const allocator = std.testing.allocator;
+    var resp = Response.init(allocator);
+
+    // Use distinct string literals for each header
+    const header_names = [_][]const u8{
+        "X-Header-0",  "X-Header-1",  "X-Header-2",  "X-Header-3",
+        "X-Header-4",  "X-Header-5",  "X-Header-6",  "X-Header-7",
+        "X-Header-8",  "X-Header-9",  "X-Header-10", "X-Header-11",
+        "X-Header-12", "X-Header-13", "X-Header-14", "X-Header-15",
+    };
+
+    for (header_names) |name| {
+        _ = resp.setHeader(name, "value");
+    }
+
+    try std.testing.expectEqual(Response.max_headers, resp.headers_len);
+
+    // Adding one more should be silently ignored
+    _ = resp.setHeader("X-Extra", "value");
+    try std.testing.expectEqual(Response.max_headers, resp.headers_len);
+}
+
+test "response reset" {
+    const allocator = std.testing.allocator;
+    var resp = Response.init(allocator);
+
+    _ = resp.setStatus(.not_found).setHeader("X-Test", "value").sendText("Not found");
+
+    resp.reset();
+
+    try std.testing.expectEqual(Status.ok, resp.status);
+    try std.testing.expectEqual(@as(u8, 0), resp.headers_len);
+    try std.testing.expectEqual(Response.Body{ .empty = {} }, resp.body);
+    try std.testing.expect(!resp.written);
 }
