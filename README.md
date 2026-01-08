@@ -36,7 +36,7 @@ fn hello(ctx: *spark.Context) !void {
 
 ## Requirements
 
-- Zig 0.13.0 or later
+- Zig 0.14.0 or later
 - Linux or macOS
 
 ## Installation
