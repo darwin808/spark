@@ -60,6 +60,13 @@ pub const http = struct {
 pub const Io = @import("io/io.zig").Io;
 pub const Worker = @import("io/worker.zig").Worker;
 pub const WorkerPool = @import("io/worker_pool.zig").WorkerPool;
+pub const AcceptPool = @import("io/accept_pool.zig").AcceptPool;
+pub const io = struct {
+    pub const Io = @import("io/io.zig").Io;
+    pub const Worker = @import("io/worker.zig").Worker;
+    pub const WorkerPool = @import("io/worker_pool.zig").WorkerPool;
+    pub const AcceptPool = @import("io/accept_pool.zig").AcceptPool;
+};
 
 // SIMD utilities (for advanced users)
 pub const simd = @import("simd/simd.zig");

@@ -47,6 +47,8 @@ pub fn build(b: *std.Build) void {
         "crud",
         "crud_fast",
         "plaintext_fast",
+        "plaintext_mt",
+        "plaintext_accept",
     };
 
     var bench_steps: [benchmarks.len]?*std.Build.Step = [_]?*std.Build.Step{null} ** benchmarks.len;
