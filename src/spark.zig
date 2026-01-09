@@ -68,6 +68,10 @@ pub const io = struct {
     pub const AcceptPool = @import("io/accept_pool.zig").AcceptPool;
 };
 
+// TLS support (requires OpenSSL)
+pub const tls = @import("tls/tls.zig");
+pub const TlsIo = @import("io/tls_io.zig").TlsIo;
+
 // SIMD utilities (for advanced users)
 pub const simd = @import("simd/simd.zig");
 

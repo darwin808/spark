@@ -32,6 +32,7 @@ fn hello(ctx: *spark.Context) !void {
 - **Express-style routing** - Familiar `.get()`, `.post()`, `.put()`, `.delete()` API
 - **Middleware support** - Built-in logger, CORS, and easy custom middleware
 - **Multi-threaded** - Thread-per-core model with SO_REUSEPORT load balancing
+- **HTTPS/TLS support** - Native TLS via OpenSSL with async handshake
 - **Production-ready security** - Request size limits, header limits, DoS protection
 
 ## Requirements
@@ -336,6 +337,104 @@ fn myHandler(ctx: *spark.Context) !void {
 }
 ```
 
+### HTTPS / TLS
+
+Spark supports HTTPS via OpenSSL. Use `TlsIo` instead of the regular I/O layer.
+
+**Generate development certificates:**
+
+```bash
+mkdir -p certs
+openssl req -x509 -newkey rsa:2048 \
+  -keyout certs/key.pem \
+  -out certs/cert.pem \
+  -days 365 -nodes \
+  -subj "/CN=localhost"
+```
+
+**HTTPS server example:**
+
+```zig
+const std = @import("std");
+const spark = @import("spark");
+const TlsIo = spark.TlsIo;
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Initialize TLS I/O layer
+    var tls_io = try TlsIo.init(allocator, .{
+        .cert_path = "certs/cert.pem",
+        .key_path = "certs/key.pem",
+        .max_connections = 1000,
+        .buffer_size = 16 * 1024,
+    });
+    defer tls_io.deinit();
+
+    // Listen on HTTPS port
+    const listen_fd = try tls_io.listen("0.0.0.0", 8443);
+    std.log.info("HTTPS server on https://localhost:8443", .{});
+
+    try tls_io.run(listen_fd, handleRequest, null);
+}
+
+fn handleRequest(conn: *TlsIo.Connection) void {
+    // Build response
+    const response =
+        "HTTP/1.1 200 OK\r\n" ++
+        "Content-Type: text/html\r\n" ++
+        "Content-Length: 45\r\n" ++
+        "Connection: close\r\n\r\n" ++
+        "<html><body>Hello HTTPS!</body></html>";
+
+    @memcpy(conn.write_buffer[0..response.len], response);
+    conn.write_len = response.len;
+}
+```
+
+**Test it:**
+
+```bash
+# Build and run
+zig build run-https
+
+# In another terminal (-k skips certificate verification)
+curl -k https://localhost:8443/
+```
+
+**Requirements:** OpenSSL must be installed on the system.
+
+```bash
+# macOS
+brew install openssl
+
+# Ubuntu/Debian
+sudo apt install libssl-dev
+
+# Alpine (Docker)
+apk add openssl-dev
+```
+
+**Production certificates:** Use Let's Encrypt for real certificates:
+
+```bash
+sudo certbot certonly --standalone -d yourdomain.com
+# Certificates saved to /etc/letsencrypt/live/yourdomain.com/
+```
+
+Then update your config:
+
+```zig
+var tls_io = try TlsIo.init(allocator, .{
+    .cert_path = "/etc/letsencrypt/live/yourdomain.com/fullchain.pem",
+    .key_path = "/etc/letsencrypt/live/yourdomain.com/privkey.pem",
+});
+```
+
+---
+
 ### Validation
 
 Spark includes a validation helper:
@@ -404,6 +503,21 @@ curl http://localhost:8080/users/1
 curl -X DELETE http://localhost:8080/users/1
 ```
 
+### HTTPS Server
+
+```bash
+# Generate self-signed certificates first
+mkdir -p examples/certs
+openssl req -x509 -newkey rsa:2048 -keyout examples/certs/key.pem \
+  -out examples/certs/cert.pem -days 365 -nodes -subj "/CN=localhost"
+
+# Run HTTPS server
+zig build run-https
+
+# Test with curl
+curl -k https://localhost:8443/
+```
+
 ---
 
 ## Project Structure
@@ -416,7 +530,8 @@ spark/
 │   ├── http/           # HTTP parser, methods, status codes
 │   ├── json/           # JSON parser and serializer
 │   ├── middleware/     # Built-in middleware (cors, logger)
-│   └── io/             # Async I/O (io_uring/kqueue)
+│   ├── io/             # Async I/O (io_uring/kqueue)
+│   └── tls/            # TLS/HTTPS support via OpenSSL
 ├── examples/           # Example applications
 ├── benchmarks/         # Performance benchmarks
 └── build.zig           # Build configuration

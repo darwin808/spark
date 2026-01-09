@@ -38,6 +38,33 @@ pub fn build(b: *std.Build) void {
         run_step.dependOn(&run.step);
     }
 
+    // HTTPS example (requires OpenSSL)
+    {
+        const https_mod = b.createModule(.{
+            .root_source_file = b.path("examples/https.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        https_mod.addImport("spark", spark_mod);
+
+        const https_exe = b.addExecutable(.{
+            .name = "https",
+            .root_module = https_mod,
+        });
+
+        // Link OpenSSL
+        https_exe.linkSystemLibrary("ssl");
+        https_exe.linkSystemLibrary("crypto");
+        https_exe.linkLibC();
+
+        const install = b.addInstallArtifact(https_exe, .{});
+        const run = b.addRunArtifact(https_exe);
+        run.step.dependOn(&install.step);
+
+        const run_step = b.step("run-https", "Run the HTTPS example (requires OpenSSL)");
+        run_step.dependOn(&run.step);
+    }
+
     // Benchmarks
     const benchmarks = [_][]const u8{
         "plaintext",
