@@ -464,6 +464,265 @@ wrk -t4 -c128 -d10s http://localhost:9000/users
 
 ---
 
+## Deployment
+
+### Coming from Express.js?
+
+Here's a quick comparison:
+
+| Express.js | Spark |
+|------------|-------|
+| `app.get('/users', handler)` | `app.get("/users", handler)` |
+| `req.params.id` | `ctx.param("id")` |
+| `req.query.page` | `ctx.query("page")` |
+| `req.body` | `ctx.body(MyStruct)` |
+| `res.json({ ok: true })` | `ctx.ok(.{ .ok = true })` |
+| `res.status(201).json(data)` | `ctx.created(data)` |
+| `npm start` | `zig build run` |
+| `node server.js` | `./zig-out/bin/my-app` |
+
+**Key difference:** Spark compiles to a single static binary. No `node_modules`, no runtime dependencies.
+
+---
+
+### Docker
+
+Spark apps compile to tiny static binaries - perfect for containers.
+
+**Dockerfile:**
+
+```dockerfile
+# Build stage
+FROM alpine:3.19 AS builder
+
+# Install Zig
+RUN apk add --no-cache curl xz
+RUN curl -L https://ziglang.org/download/0.14.0/zig-linux-x86_64-0.14.0.tar.xz | tar -xJ -C /usr/local
+ENV PATH="/usr/local/zig-linux-x86_64-0.14.0:$PATH"
+
+WORKDIR /app
+COPY . .
+RUN zig build -Doptimize=ReleaseFast
+
+# Runtime stage - just the binary, no OS
+FROM scratch
+COPY --from=builder /app/zig-out/bin/my-app /app
+EXPOSE 3000
+ENTRYPOINT ["/app"]
+```
+
+**Build and run:**
+
+```bash
+docker build -t my-spark-app .
+docker run -p 3000:3000 my-spark-app
+```
+
+**Image size:** ~3-5MB (vs ~200MB+ for Node.js)
+
+---
+
+### AWS EC2 Deployment
+
+Spark runs great on small instances. Here's a complete guide for AWS.
+
+#### 1. Choose an instance
+
+| Instance | vCPU | RAM | Cost | Expected Performance |
+|----------|------|-----|------|---------------------|
+| t2.micro | 1 | 1GB | Free tier | ~50-80k req/s |
+| t3.micro | 2 | 1GB | ~$8/mo | ~80-100k req/s |
+| t3.small | 2 | 2GB | ~$15/mo | ~100-120k req/s |
+
+**t2.micro is fine for most apps** - Spark uses very little memory (~10-50MB).
+
+#### 2. Launch EC2 instance
+
+```bash
+# SSH into your instance
+ssh -i your-key.pem ec2-user@your-instance-ip
+
+# Install Docker
+sudo yum update -y
+sudo yum install -y docker
+sudo service docker start
+sudo usermod -a -G docker ec2-user
+
+# Log out and back in, then verify
+docker --version
+```
+
+#### 3. Deploy your app
+
+**Option A: Build on server**
+
+```bash
+# Install Zig
+curl -L https://ziglang.org/download/0.14.0/zig-linux-x86_64-0.14.0.tar.xz | tar -xJ
+export PATH="$PWD/zig-linux-x86_64-0.14.0:$PATH"
+
+# Clone and build
+git clone https://github.com/your-username/your-app.git
+cd your-app
+zig build -Doptimize=ReleaseFast
+
+# Run directly (no Docker needed!)
+./zig-out/bin/my-app
+```
+
+**Option B: Docker**
+
+```bash
+# Clone your app
+git clone https://github.com/your-username/your-app.git
+cd your-app
+
+# Build and run
+docker build -t my-app .
+docker run -d -p 80:3000 --restart always --name my-app my-app
+```
+
+#### 4. Configure security group
+
+In AWS Console → EC2 → Security Groups:
+
+| Type | Port | Source |
+|------|------|--------|
+| HTTP | 80 | 0.0.0.0/0 |
+| HTTPS | 443 | 0.0.0.0/0 |
+| SSH | 22 | Your IP |
+
+#### 5. Set up a domain (optional)
+
+```bash
+# Install nginx for SSL termination
+sudo yum install -y nginx
+
+# Get SSL cert with Let's Encrypt
+sudo yum install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d yourdomain.com
+```
+
+**Nginx config** (`/etc/nginx/conf.d/app.conf`):
+
+```nginx
+server {
+    listen 80;
+    server_name yourdomain.com;
+    return 301 https://$server_name$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name yourdomain.com;
+
+    ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+```
+
+---
+
+### Environment Variables
+
+Read environment variables in your app:
+
+```zig
+const std = @import("std");
+const spark = @import("spark");
+
+pub fn main() !void {
+    // Read PORT from environment, default to 3000
+    const port_str = std.posix.getenv("PORT") orelse "3000";
+    const port = std.fmt.parseInt(u16, port_str, 10) catch 3000;
+
+    const host = std.posix.getenv("HOST") orelse "0.0.0.0";
+
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
+    var app = spark.initWithConfig(allocator, .{
+        .port = port,
+        .host = host,
+    });
+    defer app.deinit();
+
+    _ = app.get("/", index);
+    _ = app.get("/health", health);  // Health check endpoint
+
+    std.log.info("Starting server on {s}:{d}", .{ host, port });
+    try app.listen();
+}
+
+fn index(ctx: *spark.Context) !void {
+    ctx.ok(.{ .message = "Hello!" });
+}
+
+fn health(ctx: *spark.Context) !void {
+    ctx.ok(.{ .status = "healthy" });
+}
+```
+
+**Run with env vars:**
+
+```bash
+PORT=8080 HOST=0.0.0.0 ./zig-out/bin/my-app
+
+# Or with Docker
+docker run -p 80:8080 -e PORT=8080 -e HOST=0.0.0.0 my-app
+```
+
+---
+
+### docker-compose.yml
+
+For more complex setups:
+
+```yaml
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "80:3000"
+    environment:
+      - PORT=3000
+      - HOST=0.0.0.0
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 128M  # Spark uses very little memory
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+```
+
+```bash
+docker-compose up -d
+```
+
+---
+
+### Quick checklist
+
+- [ ] Build with `-Doptimize=ReleaseFast` for production
+- [ ] Use `0.0.0.0` as host (not `127.0.0.1`) to accept external connections
+- [ ] Add a `/health` endpoint for load balancers
+- [ ] Set up HTTPS (use nginx + Let's Encrypt or AWS ALB)
+- [ ] Configure security group to allow HTTP/HTTPS traffic
+
+---
+
 ## License
 
 MIT
